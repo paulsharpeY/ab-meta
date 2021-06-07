@@ -2,118 +2,17 @@
 
 library(tidyverse)
 library(effsize)
-library(BSDA)
-library(psy.phd)
 library(brms)
 library(tidybayes)
 library(forester)
 
 rm(list=ls())
+source('functions.R')
 
 ## data
 
 data_dir <- 'data'
 studies <- read_csv(paste0(data_dir,'/ab_data.csv'))
-
-## functions
-
-# If SMD, calculate pooled SD as per Cochrane Handbook, which in 6.3.1, says to use Hedge's g
-# Standardized Mean Difference (SMD, Cohen's d)
-# https://training.cochrane.org/handbook/current/chapter-06#section-6-5-1
-# I don't think https://training.cochrane.org/handbook/current/chapter-23#section-23-2-7
-# is relevant, as these are parallel group trials, not crossover trials
-
-# set pre-post attentional blink differences for treatment and control groups
-ab_set_diff <- function(df) {
-  # SDs are pooled from pre and post AB
-  # May need "Imputing a change-from-baseline standard deviation using a correlation coefficient" (Higgins et al., 2019)
-  df %>% mutate(
-               treatment.diff.m  = treatment.pre.m - treatment.post.m,
-               treatment.diff.sd = sd_pooled(treatment.n, treatment.n, treatment.pre.sd, treatment.post.sd),
-               control.diff.m    = control.pre.m - control.post.m,
-               control.diff.sd   = sd_pooled(control.n, control.n, control.pre.sd, control.post.sd)
-               )
-}
-
-#' Mean difference
-#'
-#' Returns (m1 - m2) / sd. If sd is the pooled standard deviation, then this is Hedge's g.
-#'
-#' @param m1 mean 1
-#' @param m2 mean 2
-#' @param sd standard deviation
-#' @return numeric
-d <- function(m1, m2, sd) {
-  # https://www.statisticshowto.com/hedges-g/
-  (m1 - m2) / sd
-}
-
-#' Pooled standard deviation
-#'
-#' Returns the pooled standard deviation for two groups with same or different n.
-#'
-#' @param n1 n for group 1
-#' @param n2 n for group 2
-#' @param sd1 standard deviation for group 1
-#' @param sd2 standard deviation for group 2
-#' @return numeric
-sd_pooled <- function(n1, n2, sd1, sd2) {
-  # https://www.statisticshowto.com/pooled-standard-deviation/
-  sqrt(((n1 - 1) * sd1^2 + (n2 - 1) * sd2^2) / (n1 + n2 - 2))
-}
-
-#' Convert 95% confidence interval to standard error
-#'
-#' https://training.cochrane.org/handbook/current/chapter-06#section-6-3-1
-#'
-#' @param u upper interval
-#' @param l lower interval
-#' @return numeric
-ci95_to_se <- function(u, l) { (u - l) / 3.92 }
-
-#' 95% confidence interval for Cohen's d (Rosnow & Rosenthal, 2009)
-#'
-#' @param d Cohen's d
-#' @param n1 n in group1
-#' @param n2 n in group2
-#' @return numeric
-d_ci95 <- function(d, n1, n2) {
-  df <- n1 + n2 - 2
-  sqrt((((n1 + n2) / (n1 * n2)) + (d^2 / (2 * df))) * ((n1 + n2) / df))
-}
-
-#' Set effect size for a study
-#'
-#' Calculates mean difference and 95% confidence interval.
-#'
-#' @param study data frame with publication column
-#' @param m1 mean for group 1
-#' @param m2 mean for group 2
-#' @param sd standard deviation
-#' @param n1 n in group 1
-#' @param n2 n in group 2
-#' @return tibble
-#'
-#' Assumes data = (study, mean1, mean2, sd, n1, n2, group)
-set_effect <- function(data) {
-  v <- select(data, 2:7)
-  oldnames <- names(v)
-  newnames <- c('mean1', 'mean2', 'sd', 'n1', 'n2', 'group')
-  v <- v %>%
-    rename_with(~ newnames[which(oldnames == .x)], .cols = oldnames)
-  df <- tibble(
-    study  = data$study,
-    mean1  = v$mean1,
-    mean2  = v$mean2,
-    d      = d(v$mean1, v$mean2, v$sd),
-    ci = 0, l = 0, u = 0
-  ) %>% mutate(
-    ci    = d_ci95(d, v$n1, v$n2),
-    l     = d - .data$ci,
-    u     = d + .data$ci,
-    group = v$group
-  )
-}
 
 ### main ###
 
@@ -238,7 +137,7 @@ model_data <- effects %>%
   select(Study, d, se, ci, l, u, mean1, mean2, group)
 
 # brm config
-iter        <- '100e4'
+iter        <- '50e4' # increase to 100e4 for final results
 adapt_delta <- 0.99 # Should normally be 0.8 (default) < adapt_delta < 1
 sd_prior    <- "cauchy(0, .3)"
 
@@ -274,7 +173,7 @@ sd_prior    <- "cauchy(0, .3)"
 # saveRDS(funnel_data, paste0(data_dir, '/ab_funnel_data.Rd'))
 
 # model all studies
-rem <- brm(
+rem_all <- brm(
   d | se(se) ~ 1 + (1 | Study),
   data = model_data,
   chains=8, iter=iter,
@@ -284,261 +183,71 @@ rem <- brm(
   file = 'cache/all-ab-brms'
 )
 
-brms_function <- function(model, data = dat, average_effect_label = 'Pooled effect',
-                          iter = '50e4', sd_prior = "cauchy(0, .3)", adapt_delta = 0.8, cache_file = 'foo') {
-  ## https://github.com/mvuorre/brmstools
-  ## https://vuorre.netlify.com/post/2016/09/29/meta-analysis-is-a-special-case-of-bayesian-multilevel-modeling/
-
-  # store study names to avoid clashes with commas in spread_draws() column specifications
-  data <- data %>%
-    mutate(study_number = as.numeric(rownames(data)))
-  study_names <- data %>% select(study_number, Study)
-
-  model <- brm(
-    d | se(se) ~ 1 + (1 | study_number),
-    data = data,
-    chains=8, iter=iter,
-    prior = c(prior_string("normal(0,1)", class = "Intercept"),
-              prior_string(sd_prior, class = "sd")),
-    control = list(adapt_delta = adapt_delta),
-    file = paste(cache_file, 'brms', sep = '-')
-  )
-
-  # For an explanation of tidybayes::spread_draws(), refer to http://mjskay.github.io/tidybayes/articles/tidy-brms.html
-  # Study-specific effects are deviations + average
-  draws <- spread_draws(model, r_study_number[study_number, term], b_Intercept) %>%
-    rename(b = b_Intercept) %>%
-    mutate(b = r_study_number + b) %>%
-    left_join(study_names, by = 'study_number')
-
-  # Average effect
-  draws_overall <- spread_draws(model, b_Intercept) %>%
-    rename(b = b_Intercept) %>%
-    mutate(Study = average_effect_label)
-
-  # Combine average and study-specific effects' data frames
-  combined_draws <- bind_rows(draws, draws_overall) %>%
-    ungroup() %>%
-    mutate(Study = fct_relevel(Study, average_effect_label, after = Inf)) # put overall effect after individual studies
-
-  # summarise in metafor format
-  metafor <- group_by(combined_draws, Study) %>%
-    mean_hdci(b) %>% # FIXME: parameterise interval
-    rename(est = b, ci_low = .lower, ci_high = .upper)
-
-  return(metafor)
-}
-
-brms_object_to_table <- function(model, table, overall_estimate = FALSE, subset_col = "Overall",
-                                 subset_col_order = NULL, iter = '1e4', sd_prior = "cauchy(0, .3)",
-                                 adapt_delta = 0.8, cache_label = 'foo') {
-
-  table <- left_join(data.frame(model$data %>% select(Study, d, se)), table, by = 'Study')
-
-  # Reorder data
-  table <- select(table, Study, everything())
-
-  # Clean level names so that they look nice in the table
-  table[[subset_col]] <- str_to_sentence(table[[subset_col]])
-  levels <- unique(table[[subset_col]])
-  if(!(is.null(subset_col_order))){
-    levels <- intersect(subset_col_order, levels)
-  }
-
-  # Work out if only one level is present. Passed to create_subtotal_row(), so
-  # that if only one group, no subtotal is created.
-  single_group <- ifelse(length(levels)==1, TRUE, FALSE)
-
-  # Subset data by levels, run user-defined metafor function on them, and
-  # recombine along with Overall rma output
-  subset <- lapply(levels, function(level){filter(table, !!as.symbol(subset_col) == level)})
-  names(subset) <- levels
-
-  # model each data subset
-  subset_res <- lapply(levels, function(level){brms_function(model, data = subset[[level]],
-                                                             iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta,
-                                                             cache_file = paste(cache_label, level, sep = '-'))})
-  names(subset_res) <- levels
-
-  # This binds the table together
-  subset_tables <-
-    lapply(levels, function(level){
-      rbind(
-        create_title_row(level),
-        dplyr::select(subset_res[[level]], Study, .data$est, .data$ci_low, .data$ci_high)
-      )
-    })
-
-  subset_table <- do.call("rbind", lapply(subset_tables, function(x) x))
-
-  ordered_table <- rbind(subset_table,
-                         if (overall_estimate) {
-                           create_subtotal_row(rma, "Overall", add_blank = FALSE)
-                         })
-
-  # Indent the studies for formatting purposes
-  ordered_table$Study <- as.character(ordered_table$Study)
-  ordered_table$Study <- ifelse(!(ordered_table$Study %in% levels) & ordered_table$Study != "Overall",
-                                paste0("  ", ordered_table$Study),
-                                ordered_table$Study)
-
-  return(ordered_table)
-}
-
-# TODO forester plot
-library(forester)
-# plunder robvis for rem -> forester-friendly
-data <- brms_object_to_table(rem, effects %>% select(Study, group), cache_label = 'cache/all-ab', subset_col = 'group',
+all_data <- brms_object_to_table(rem_all, effects %>% select(Study, group), cache_label = 'cache/all-ab', subset_col = 'group',
                              iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
-forester(data,
-               subset_col = 'group',
-               estimate_col_name = estimate_col_name,
-               cache_label = 'nrct_ab',
-               null_line_at = 0,
-               font_family = "serif",
-               x_scale_linear = TRUE,
-               xlim = c(-.8, 1.3),
-               xbreaks = c(-.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
-               arrows = FALSE,
-               arrow_labels = c("Low", "High"),
-               nudge_y = -0.2,
-               estimate_precision = 2,
-               display = FALSE,
-               add_tests = FALSE,
-               file_path = here::here(paste0("figures/all_ab_forest.png"))
+# forest plot for all studies
+forester(
+  select(all_data, Study),
+  all_data$est,
+  all_data$ci_low,
+  all_data$ci_high,
+  estimate_col_name = estimate_col_name,
+  null_line_at = 0,
+  font_family = "serif",
+  x_scale_linear = TRUE,
+  xlim = c(-1.3, 1.3),
+  xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
+  arrows = FALSE,
+  arrow_labels = c("Low", "High"),
+  nudge_y = -0.2,
+  estimate_precision = 2,
+  display = FALSE,
+  file_path = here::here(paste0("figures/all_ab_forest.png"))
 )
 
-# RCTs
-rct <- model_data %>% slice(c(1, 5))
-rem <- brm(
+# model all studies except ours
+rem_not_ours <- brm(
   d | se(se) ~ 1 + (1 | Study),
-  data = rct,
+  data = model_data %>% filter(Study != 'Sharpe (2021, Experiment 6)'),
   chains=8, iter=iter,
   prior = c(prior_string("normal(0,1)", class = "Intercept"),
             prior_string(sd_prior, class = "sd")),
   control = list(adapt_delta = adapt_delta),
-  file = 'rct-ab-brms'
-)
-# variance (vi) = sei^2
-# yi must be named 'yi' for slab to work
-#rct.escalc <- metafor::escalc(measure = "SMD", yi = yi, sei = sei, data = rct, slab = Study)
-#rct.rma <- metafor::rma(yi, vi, data = rct.escalc)
-rob_blobbogram(rem, rob2,
-               iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta,
-               subset_col = 'group',
-               estimate_col_name = estimate_col_name,
-               cache_label = 'rct_ab',
-               null_line_at = 0,
-               font_family = "serif",
-               rob_colour = "cochrane",
-               rob_tool = "ROB2",
-               x_scale_linear = TRUE,
-               xlim = c(-.3, 1),
-               xbreaks = c(-.3, 0, .3, .5, .8, 1),
-               arrows = FALSE,
-               arrow_labels = c("Low", "High"),
-               nudge_y = -0.2,
-               estimate_precision = 2,
-               display = FALSE,
-               add_tests = FALSE,
-               file_path = here::here(paste0("figures/rct_ab_forest.png"))
+  file = 'cache/not-ours-ab-brms'
 )
 
-read_brms_model <- function(name) {
-  readRDS(paste0(name, '.rds'))
-}
+all_except_our_data <- brms_object_to_table(rem_not_ours, effects %>% select(Study, group),
+                                            cache_label = 'cache/not-ours-ab', subset_col = 'group',
+                                            iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
-p_effect <- tibble(type = '', experience = '', small = 0, medium = 0, large = 0, neg_small = 0, neg_medium = 0)
-for (type in c('rct_ab', 'nrct_ab')) {
-    for (experience in c('Novice', 'Experienced')) {
-      name <- paste(type, experience, 'brms', sep = '-')
-      if (name %in% c('rct_ab-Experienced-brms')) next
-      model <- read_brms_model(name)
-      # pooled effect
-      draws <- spread_draws(model, b_Intercept) %>% rename(b = b_Intercept)
-      df <- draws %>% summarise(small = mean(b > 0.2), medium = mean(b > 0.5), large = mean(b > 0.8),
-                                neg_small = mean(b < -.2), neg_medium = mean(b < -.5))
-      p_effect <- add_row(p_effect, type = type, experience = experience,
-                          small = df$small, medium = df$medium, large = df$large,
-                          neg_small = df$neg_small, neg_medium = df$neg_medium)
-    }
-}
-p_effect <- slice(p_effect, 2:n())
-saveRDS(p_effect, paste0(data_dir, '/p_effect.Rd'))
+# forest plot for all studies
+forester(
+  select(all_except_our_data, Study),
+  all_except_our_data$est,
+  all_except_our_data$ci_low,
+  all_except_our_data$ci_high,
+  estimate_col_name = estimate_col_name,
+  null_line_at = 0,
+  font_family = "serif",
+  x_scale_linear = TRUE,
+  xlim = c(-1.3, 1.3),
+  xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
+  arrows = FALSE,
+  arrow_labels = c("Low", "High"),
+  nudge_y = -0.2,
+  estimate_precision = 2,
+  display = FALSE,
+  file_path = here::here(paste0("figures/not_ours_ab_forest.png"))
+)
 
 ## check rhat
-for (type in c('rct_ab', 'nrct_ab')) {
-  for (experience in c('Novice', 'Experienced')) {
-    name <- paste(type, experience, 'brms', sep = '-')
-    if (name %in% c('rct_ab-Experienced-brms')) next
-    model <- read_brms_model(name)
-    print(name)
-    print(summary(model)) # check rhat
-  }
-}
-
-# for (var in c('md', 'smd')) {
-#   for (subgroup in c('novice', 'experienced')) {
-#     if (var == 'md') {
-#       xlab <- 'Mean Difference'
-#     } else {
-#       xlab <- 'Standardised Mean Difference'
-#     }
-#     # calculate SEM from CI
-#     model_data <- effects %>%
-#       filter(score == var & group == subgroup) %>%
-#       mutate(se = ci95_to_se(u, l), study = factor(study))
-#
-#     # this shows you the default priors
-#     get_prior(d | se(se) ~ 1 + (1 | study), data=model_data)
-#
-#     model_data$study <- str_replace(model_data$study, ",", "")  # remove commas in study names
-#     # to rebuild model delete cached file var'-rem'
-#     rem <- brm(
-#       d | se(se) ~ 1 + (1 | study),
-#       data = model_data,
-#       chains=8, iter=10e4,
-#       prior = c(prior_string("normal(0,1)", class = "Intercept"),
-#         prior_string("cauchy(0, .5)", class = "sd")),
-#       file = paste(subgroup, var, 'rem', sep = '-')
-#     )
-#
-#     # Vuorre also used control=list(adapt_delta = .99). Something to do with non-convergence.
-#
-#     # extract the posterior samples...
-#     posterior_samples <- rem %>% as.data.frame()
-#
-#     # this dataframe has one column per parameter in the model
-#     # (inluding the random effects, so you get each study's divergence from the mean too)
-#     posterior_samples %>% names
-#
-#     # posterior credible interval
-#     posterior_samples %>% select(b_Intercept) %>% mean_qi()
-#
-#     # posterior plot
-#     posterior_samples %>%
-#       ggplot(aes(b_Intercept)) +
-#       geom_density() + xlab("Pooled effect size (posterior density)")
-#
-#     # test of the hypothesis that the pooled effect is larger than .3 or smaller than -.3
-#     # the Evid.Ratio here is a BayesFactor so we have reasonable evidence against.
-#     hypothesis(rem, "abs(Intercept)>.3")
-#
-#     # or calculate the other way. BF=4 that the effect is smaller than < .3, even with so few studies
-#     hypothesis(rem, "abs(Intercept)<.3")
-#
-#     forest <- forest_bayes(rem)
-#     # save plot
-#     ggsave(filename = paste0('figures/', subgroup, '_', var, '_forest.pdf'), plot = forest,
-#            units = "in", width = 8.27, height = 11.69)
-#
-#     # Rhat = 1.0 is good
-#     # Effective Sample Size (ESS):chains*iter-warmp should be above some threshold
-#     # Group-Level, Population-Level or both?
-#     print(paste(subgroup, var, sep = ':'))
-#     print(rem)
-#     # prior_summary(rem)
+# for (type in c('rct_ab', 'nrct_ab')) {
+#   for (experience in c('Novice', 'Experienced')) {
+#     name <- paste(type, experience, 'brms', sep = '-')
+#     if (name %in% c('rct_ab-Experienced-brms')) next
+#     model <- read_brms_model(name)
+#     print(name)
+#     print(summary(model)) # check rhat
 #   }
 # }
-
