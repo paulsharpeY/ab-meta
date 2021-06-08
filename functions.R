@@ -197,7 +197,7 @@ brms_object_to_table <- function(model, table, overall_estimate = FALSE, subset_
   return(ordered_table)
 }
 
-## BOOKMARK: Attentional Blink functions
+## BOOKMARK: Attentional Blink (AB) functions
 
 # set pre-post attentional blink differences for treatment and control groups
 ab_set_diff <- function(df) {
@@ -211,3 +211,36 @@ ab_set_diff <- function(df) {
   )
 }
 
+## BOOKMARK: Attention Network Test (ANT) functions
+
+#' Compute ANT scores for alerting, orienting and conflict.
+#'
+#' @param df Data frame
+#' @importFrom dplyr group_by left_join mutate select
+#' @importFrom forcats fct_relevel
+#' @importFrom magrittr %>%
+#' @importFrom rlang .data
+#' @importFrom tidyr pivot_longer pivot_wider unite
+#' @export
+#' @return Data frame
+#'
+ant_scores <- function(df) {
+  alerting_orienting <- df %>%
+    pivot_wider(id_cols = c(.data$p,.data$group,.data$t), names_from = .data$cue,
+                values_from = .data$rt, values_fn = list(rt = mean)) %>%
+    mutate(alerting = .data$nocue - .data$double, orienting = .data$center - .data$spatial) %>%
+    select(.data$p, .data$group, .data$t, .data$alerting, .data$orienting)
+  conflict <- df %>%
+    pivot_wider(id_cols = c(.data$p,.data$group,.data$t),
+                names_from = .data$flanker_type, values_from = .data$rt,
+                values_fn = list(rt = mean)) %>%
+    mutate(conflict = .data$incongruent - .data$congruent) %>%
+    select(.data$p, .data$group, .data$t, .data$conflict)
+  result <- left_join(alerting_orienting, conflict, by=c('p', 'group', 't')) %>%
+    pivot_longer(cols = c(.data$alerting, .data$orienting, .data$conflict),
+                 names_to = 'var', values_to = 'rt') %>%
+    mutate(var = factor(var))
+  # arrange for plot facets to be LtR: Alerting, Orienting, Conflict
+  result$var <- fct_relevel(result$var, 'conflict', after = Inf)
+  return(result)
+}
