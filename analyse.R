@@ -1,13 +1,20 @@
 # Attentional Blink (AB) meta-analysis
 
+rm(list=ls())
+
 library(tidyverse)
 library(effsize)
 library(brms)
 library(tidybayes)
-library(forester)
-
-rm(list=ls())
 source('functions.R')
+if (get_hostname() != 'rstudio') { library(forester) }
+
+## brm config
+
+iter        <- '50e4' # increase to 100e4 for final results
+adapt_delta <- 0.99 # Should normally be 0.8 (default) < adapt_delta < 1
+sd_prior    <- "cauchy(0, .3)"
+options(mc.cores = parallel::detectCores() - 4) # 8 cores
 
 ## data
 
@@ -136,11 +143,6 @@ estimate_col_name <- 'AB SMD estimate'
 model_data <- effects %>%
   select(Study, d, se, ci, l, u, mean1, mean2, group)
 
-# brm config
-iter        <- '50e4' # increase to 100e4 for final results
-adapt_delta <- 0.99 # Should normally be 0.8 (default) < adapt_delta < 1
-sd_prior    <- "cauchy(0, .3)"
-
 ## TBC: model all studies for funnel plots
 # model_data <- model_data %>%
 #   mutate(study_number = as.numeric(rownames(model_data)))
@@ -186,25 +188,27 @@ rem_all <- brm(
 all_data <- brms_object_to_table(rem_all, effects %>% select(Study, group), cache_label = 'cache/all-ab', subset_col = 'group',
                              iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
-# forest plot for all studies
-forester(
-  select(all_data, Study),
-  all_data$est,
-  all_data$ci_low,
-  all_data$ci_high,
-  estimate_col_name = estimate_col_name,
-  null_line_at = 0,
-  font_family = "serif",
-  x_scale_linear = TRUE,
-  xlim = c(-1.3, 1.3),
-  xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
-  arrows = FALSE,
-  arrow_labels = c("Low", "High"),
-  nudge_y = -0.2,
-  estimate_precision = 2,
-  display = FALSE,
-  file_path = here::here(paste0("figures/all_ab_forest.png"))
-)
+if (get_hostname() != 'rstudio') {
+  # forest plot for all studies
+  forester(
+    select(all_data, Study),
+    all_data$est,
+    all_data$ci_low,
+    all_data$ci_high,
+    estimate_col_name = estimate_col_name,
+    null_line_at = 0,
+    font_family = "serif",
+    x_scale_linear = TRUE,
+    xlim = c(-1.3, 1.3),
+    xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
+    arrows = FALSE,
+    arrow_labels = c("Low", "High"),
+    nudge_y = -0.2,
+    estimate_precision = 2,
+    display = FALSE,
+    file_path = here::here(paste0("figures/all_ab_forest.png"))
+  )
+}
 
 # model all studies except ours
 rem_not_ours <- brm(
@@ -221,25 +225,27 @@ all_except_our_data <- brms_object_to_table(rem_not_ours, effects %>% select(Stu
                                             cache_label = 'cache/not-ours-ab', subset_col = 'group',
                                             iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
-# forest plot for all studies
-forester(
-  select(all_except_our_data, Study),
-  all_except_our_data$est,
-  all_except_our_data$ci_low,
-  all_except_our_data$ci_high,
-  estimate_col_name = estimate_col_name,
-  null_line_at = 0,
-  font_family = "serif",
-  x_scale_linear = TRUE,
-  xlim = c(-1.3, 1.3),
-  xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
-  arrows = FALSE,
-  arrow_labels = c("Low", "High"),
-  nudge_y = -0.2,
-  estimate_precision = 2,
-  display = FALSE,
-  file_path = here::here(paste0("figures/not_ours_ab_forest.png"))
-)
+if (get_hostname() != 'rstudio') {
+  # forest plot for all studies
+  forester(
+    select(all_except_our_data, Study),
+    all_except_our_data$est,
+    all_except_our_data$ci_low,
+    all_except_our_data$ci_high,
+    estimate_col_name = estimate_col_name,
+    null_line_at = 0,
+    font_family = "serif",
+    x_scale_linear = TRUE,
+    xlim = c(-1.3, 1.3),
+    xbreaks = c(-1.3, -1, -.8, -.5, -.3, 0, .3, .5, .8, 1, 1.3),
+    arrows = FALSE,
+    arrow_labels = c("Low", "High"),
+    nudge_y = -0.2,
+    estimate_precision = 2,
+    display = FALSE,
+    file_path = here::here(paste0("figures/not_ours_ab_forest.png"))
+  )
+}
 
 ## check rhat
 # for (type in c('rct_ab', 'nrct_ab')) {

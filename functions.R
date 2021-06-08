@@ -8,6 +8,10 @@
 
 ## BOOKMARK generic functions
 
+get_hostname <- function(){
+  return(as.character(Sys.info()["nodename"]))
+}
+
 #' Mean difference
 #'
 #' Returns (m1 - m2) / sd. If sd is the pooled standard deviation, then this is Hedge's g.
