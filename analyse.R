@@ -129,7 +129,7 @@ brab <- read_csv(paste0(data_dir, '/braboszcz_et_al_2013.csv')) %>%
   select(study, m_1, m_2, effect_sd, n, n2, experience)
 smd <- bind_rows(smd, set_effect(brab))
 
-## meta-analysis
+## BOOKMARK: meta-analysis
 
 effects <- smd %>%
   mutate(se = ci95_to_se(u, l)) %>%
@@ -142,37 +142,6 @@ estimate_col_name <- 'AB SMD estimate'
 # calculate SEM from CI
 model_data <- effects %>%
   select(Study, d, se, ci, l, u, mean1, mean2, group)
-
-## TBC: model all studies for funnel plots
-# model_data <- model_data %>%
-#   mutate(study_number = as.numeric(rownames(model_data)))
-# study_names <- model_data %>% select(study_number, Study)
-#
-# rem <- brm(
-#   d | se(se) ~ 1 + (1 | study_number), # random effects meta-analyses model (see brmsformula)
-#   data = model_data,
-#   chains=8, iter=iter,
-#   prior = c(prior_string("normal(0,1)", class = "Intercept"),
-#             prior_string(sd_prior, class = "sd")),
-#   control = list(adapt_delta = adapt_delta),
-#   file = paste('ab-brms', sep = '-')
-# )
-
-# save data for funnel plots
-# effect by study
-# study <- rem %>%
-#   spread_draws(b_Intercept, r_study_number[study_number,]) %>%
-#   mean_hdci(fitted_smd = r_study_number + b_Intercept, .width = c(.95)) %>%  # "Study-specific effects are deviations + average"
-#   left_join(study_names, by = 'study_number') %>%
-#   left_join(model_data, by = 'Study') %>%
-#   select(Study, fitted_smd, se, group)
-# # average effect
-# pooled <- rem %>%
-#   spread_draws(b_Intercept) %>%
-#   mean_hdci(fitted_smd = b_Intercept, .width = c(.95)) %>%
-#   mutate(Study = "pooled", se_max = max(study$se))
-# funnel_data <- bind_rows(study, pooled) # SMD is fitted value, but SE is from original study
-# saveRDS(funnel_data, paste0(data_dir, '/ab_funnel_data.Rd'))
 
 # model all studies
 rem_all <- brm(
@@ -188,6 +157,7 @@ rem_all <- brm(
 all_data <- brms_object_to_table(rem_all, effects %>% select(Study, group), cache_label = 'cache/all-ab', subset_col = 'group',
                              iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
+# BOOKMARK: forest plot (all studies)
 if (get_hostname() != 'rstudio') {
   # forest plot for all studies
   forester(
@@ -225,6 +195,7 @@ all_except_our_data <- brms_object_to_table(rem_not_ours, effects %>% select(Stu
                                             cache_label = 'cache/not-ours-ab', subset_col = 'group',
                                             iter = iter, sd_prior = sd_prior, adapt_delta = adapt_delta)
 
+# BOOKMARK: forest plot (all except our studies)
 if (get_hostname() != 'rstudio') {
   # forest plot for all studies
   forester(

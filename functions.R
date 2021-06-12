@@ -134,6 +134,10 @@ brms_function <- function(model, data = dat, average_effect_label = 'Pooled effe
     mean_hdci(b) %>% # FIXME: parameterise interval
     rename(est = b, ci_low = .lower, ci_high = .upper)
 
+  # free memory?
+  rm(model, draws, draws_overall, combined_draws)
+  gc()
+
   return(metafor)
 }
 
